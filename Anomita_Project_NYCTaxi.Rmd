@@ -1,0 +1,495 @@
+---
+title: "NYC Taxi Trip Duration Prediction"
+author: "Anomita Chandra"
+date: "July 22, 2019"
+output: html_document
+---
+
+
+
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+
+
+__Load libraries___
+```{r}
+if (!require('tidyverse')) {
+  install.packages('tidyverse')
+}
+if (!require('data.table')) {
+  install.packages('data.table')
+}
+if (!require('dplyr')) {
+  install.packages('dplyr')
+}
+if (!require('lubridate')) {
+  install.packages('lubridate')
+}
+if (!require('fasttime')) {
+  install.packages('fasttime')
+}
+if (!require('magrittr')) {
+  install.packages('magrittr')
+}
+if (!require('leaflet')) {
+  install.packages('leaflet')
+}
+if (!require('maps')) {
+  install.packages('maps')
+}
+if (!require('ggplot2')) {
+  install.packages('ggplot2')
+}
+if (!require('forcats')) {
+  install.packages('forcats')
+}
+if (!require('geosphere')) {
+  install.packages('geosphere')
+}
+if (!require('xgboost')) {
+  install.packages('xgboost')
+}
+if (!require('caret')) {
+  install.packages('caret')
+}
+if (!require('corrplot')) {
+  install.packages('corrplot')
+}
+if (!require('glmnet')) {
+  install.packages('glmnet')
+}
+if (!require('mlbench')) {
+  install.packages('mlbench')
+}
+if (!require('randomForest')) {
+  install.packages('randomForest')
+}
+if (!require('caTools')) {
+  install.packages('caTools')
+}
+
+```
+
+__Loading the data__
+
+```{r}
+train <- read.csv("train.csv")
+```
+
+___Data cleaning___
+```{r}
+#Longest ride
+train %>% filter(log(trip_duration) > 10) %>% arrange(desc(trip_duration)) %>%mutate(trip_duration = trip_duration/3600)
+
+#shortest ride
+train %>% filter(trip_duration < 2) %>% arrange(trip_duration)
+View(train)
+
+#Concentrating on specific area only
+train <- filter(train, train$pickup_longitude >= -74 & train$pickup_longitude <= -73 &
+                  train$pickup_latitude >= 39 & train$pickup_latitude <= 41 & train$dropoff_longitude >= -74 & 
+                  train$dropoff_longitude <= -73 & train$dropoff_latitude>= 39 & train$pickup_latitude<=41)
+#view(train)
+```
+
+___Mean and Standard Deviation___
+```{r}
+mean(train$trip_duration)
+sd(train$trip_duration)
+```
+
+___Datatype Conversion___
+```{r}
+#train$pickup_weekdays <- weekdays(train$pickup_datetime)
+#train$pickup_weekdays <- as.factor(train$pickup_weekdays)
+
+train <- train %>%
+  mutate(pickup_datetime = ymd_hms(pickup_datetime),
+         dropoff_datetime = ymd_hms(dropoff_datetime),
+         vendor_id = factor(vendor_id),
+         passenger_count = factor(passenger_count)
+  )
+
+
+train
+```
+
+___Data exploration___
+```{r}
+#Checking for any missing values
+sum(is.na(train))
+
+#Summary of the dataset
+summary(train)
+```
+
+
+___Plotting graphs___
+```{r}
+#No of passengers
+ggplot(data = train, mapping = aes(x = passenger_count))+
+  geom_bar( fill  = "steelblue")+ ggtitle("The count of No. of passengers travelling")
+table(train$passenger_count)
+
+
+#Trip duration
+ggplot(data = train, mapping = aes(x = trip_duration))+
+  geom_histogram(bins = 80, color = "darkblue", fill = "lightblue")+scale_x_log10()+scale_y_sqrt()+ ggtitle("Trip Duration")
+
+#Histogram for pick-up datetime
+p1 <- train %>%
+  ggplot(aes(pickup_datetime)) +
+  geom_histogram(color = "maroon", fill = "lightpink", bins = 120) +
+  labs(x = "Pickup dates")+ggtitle("Ride counts for Pickup dates" )
+
+layout <- matrix(c(1,2),2,1,byrow=FALSE)
+plot(p1, layout=layout)
+
+#Histogram for drop in pick up dates
+p2 <- train %>%
+  filter(pickup_datetime > ymd("2016-01-20") & pickup_datetime < ymd("2016-02-10")) %>%
+  ggplot(aes(pickup_datetime)) +
+  geom_histogram(color = "maroon", fill = "lightpink", bins = 120)+ ggtitle("Drop in Pickup Dates")
+
+layout <- matrix(c(1,2),2,1,byrow=FALSE)
+plot(p2, layout=layout)
+
+#Histogram for Dropoff datetime
+p3 <- train %>%
+  ggplot(aes(dropoff_datetime)) +
+  geom_histogram(color = "maroon", fill = "lightpink", bins = 120) +
+  labs(x = "Dropoff dates")+ggtitle("Ride counts for Dropoff dates")
+
+layout <- matrix(c(1,2),2,1,byrow=FALSE)
+plot(p3, layout=layout)
+
+#Vendor ID
+p4 <- train %>%
+  ggplot(aes(vendor_id, fill = vendor_id)) +
+  geom_bar() +
+  theme(legend.position = "none")+ggtitle("No. of vendors providing service")
+
+layout <- matrix(c(1,2),2,1,byrow=FALSE)
+plot(p4, layout=layout)
+
+##Workday pickups
+
+p5 <- train %>%
+  mutate(wday = wday(pickup_datetime, label = TRUE)) %>%
+  group_by(wday, vendor_id) %>%
+  count() %>%
+  ggplot(aes(wday, n, colour = vendor_id)) +
+  geom_point(size = 4) + ggtitle("Pickups on workdays wrt vendors")+
+  labs(x = "Day of the week", y = "Total number of pickups") +
+  theme(legend.position = "none")
+
+layout <- matrix(c(1,2),2,1,byrow=FALSE)
+plot(p5, layout=layout)
+
+##Days of week
+p6 <- train %>% ggplot(data = train, mapping =aes(x = wday(pickup_datetime), fill = vendor_id))+
+  geom_bar()+
+  labs(y = "Total number of pickups", x = "Days of the week")+ ggtitle("Total number of Pickups on workdays")
+
+layout <- matrix(c(1,2),2,1,byrow=FALSE)
+plot(p6, layout=layout)
+
+#Hour of the day
+p7 <- train %>%
+  mutate(hpick = hour(pickup_datetime)) %>%
+  group_by(hpick, vendor_id) %>%
+  count() %>%
+  ggplot(aes(hpick, n, color = vendor_id)) +
+  geom_point(size = 4) +
+  labs(x = "Hour of the day", y = "Total number of pickups") +
+  theme(legend.position = "none") + ggtitle("Pickups according to the hour of the day")
+
+layout <- matrix(c(1,2,3,4,5,5),3,2,byrow=TRUE)
+plot(p7, layout=layout)
+
+#Trip volume per hour of the day depending on the month
+p8 <- train %>%
+  mutate(hpick = hour(pickup_datetime),
+         Month = factor(month(pickup_datetime, label = TRUE))) %>%
+  group_by(hpick, Month) %>%
+  count() %>%
+  ggplot(aes(hpick, n, color = Month)) +
+  geom_line(size = 1.5) +
+  labs(x = "Hour of the day", y = "count")
+
+layout <- matrix(c(1,2),2,1,byrow=FALSE)
+plot(p8, layout=layout)
+
+#Trip volume per hour of the day depending on the week
+p9 <- train %>%
+  mutate(hpick = hour(pickup_datetime),
+         wday = factor(wday(pickup_datetime, label = TRUE))) %>%
+  group_by(hpick, wday) %>%
+  count() %>%
+  ggplot(aes(hpick, n, color = wday)) +
+  geom_line(size = 1.5) +
+  labs(x = "Hour of the day", y = "count")
+
+layout <- matrix(c(1,2),2,1,byrow=FALSE)
+plot(p9, layout=layout)
+```
+
+
+___Map___
+```{r}
+set.seed(1234)
+m <- sample_n(train, 8e3)
+
+leaflet (data = m) %>% addProviderTiles("Esri.NatGeoWorldMap") %>%
+  addCircleMarkers(~ pickup_longitude, ~pickup_latitude, radius = 1,
+                   color = "blue", fillOpacity = 0.3)
+```
+
+___Calculating distance___
+```{r}
+#Calculate distance
+
+train$trip_duration <- log(as.numeric(train$trip_duration))#As the numbers are large converting it using log function
+
+pick_coord <- train %>%
+  select(pickup_longitude, pickup_latitude)
+
+drop_coord <- train %>%
+  select(dropoff_longitude, dropoff_latitude)
+
+train$dist <- distCosine(pick_coord, drop_coord)
+View(train)
+
+#Plotting Distance vs Trip duration
+set.seed(4321)
+train %>%
+  sample_n(5e4) %>%
+  ggplot(aes(dist,trip_duration)) +
+  geom_point() +
+  labs(x = "Direct distance [m]", y = "Trip duration [s]")
+```
+
+___Linear Regression using Xgboost___
+```{r}
+set.seed(123)
+split = sample.split(train$trip_duration, SplitRatio = 0.7)
+training_set = subset(train, split == TRUE)
+validation_set = subset(train, split == FALSE)
+
+View(validation_set)
+
+foo <- training_set %>% select(-trip_duration)
+bar <- validation_set %>% select(-trip_duration)
+
+dtrain <- xgb.DMatrix(data.matrix(foo),label = training_set$trip_duration)
+dvalid <- xgb.DMatrix(data.matrix(bar),label = validation_set$trip_duration)
+
+xgb_params <- list(colsample_bytree = 0.7, #variables per tree 
+                   subsample = 0.7, #data subset per tree
+                   booster = "gbtree",
+                   max_depth = 5, #tree levels
+                   eta = 0.3, #shrinkage
+                   eval_metric = "rmse", 
+                   objective = "reg:linear",
+                   seed = 4321
+)       
+
+watchlist <- list(train=dtrain, valid=dvalid)
+
+set.seed(4321)
+gb_dt <- xgb.train(params = xgb_params,
+                   data = dtrain,
+                   print_every_n = 5,
+                   watchlist = watchlist,
+                   nrounds = 60)
+#Cross-validation 
+xgb_cv <- xgb.cv(xgb_params,dtrain,early_stopping_rounds = 10, nfold = 5, nrounds=15)
+#Prediction
+test_preds <- predict(gb_dt,dvalid)
+View(test_preds)
+#Calculate prediction accuracy
+actuals_preds <- data.frame(cbind(actuals= validation_set$trip_duration, predicteds=test_preds)) 
+correlation_accuracy <- cor(actuals_preds)
+head(actuals_preds)
+#Min-max accuracy
+min_max_accuracy <- mean(apply(actuals_preds, 1, min) / apply(actuals_preds, 1, max)) 
+min_max_accuracy
+
+
+summary(gb_dt)
+```
+
+
+___Lasso Regression___
+```{r}
+tr <- trainControl(method = "repeatedcv", 
+                   number = 10, repeats = 3,
+                   verboseIter = TRUE)
+set.seed(123)
+sample <- sample_n(training_set, 10000)
+sample <- sample[,-c(1)]
+
+lassoReg <- train(trip_duration~., sample, method = 'glmnet',
+                  tuneGrid = expand.grid(alpha = 1, 
+                                         lambda = seq(0.0001, 0.3, length = 5)),
+                  trControl = tr)
+
+# print results
+print(lassoReg)
+
+# plot results
+plot(lassoReg)
+plot(lassoReg$finalModel, xvar = 'lambda', lwd =1.4, label=TRUE)
+plot(varImp(lassoReg, scale = TRUE))
+
+pred1 <- predict(lassoReg, sample)  
+pred1  
+error1 <-(sample$trip_duration - pred1)
+error1
+print(sqrt(mean((error1)^2)))
+
+sample_v <- sample_n(validation_set,10000)
+sample_v <- sample_v[,-c(1)]
+pred2 <- predict(lassoReg, sample_v)  
+pred2  
+error2 <-(sample_v$trip_duration - pred2)
+error2
+sqrt(mean((error2)^2))
+```
+
+___Ridge Regression___
+```{r}
+set.seed(123)
+ridgeReg <- train(trip_duration~., sample, method = 'glmnet',
+                  tuneGrid = expand.grid(alpha = 0, 
+                                         lambda = seq(0.0001, 1, length = 5)),
+                  trControl = tr)
+# print results
+print(ridgeReg)
+
+# plot results
+plot(ridgeReg)
+plot(ridgeReg$finalModel, xvar = 'lambda', lwd =1.4, label = TRUE)
+plot(varImp(ridgeReg, scale = TRUE))
+
+
+pred3 <- predict(ridgeReg, sample)  
+pred3  
+error3 <-(sample$trip_duration - pred3)
+error3
+sqrt(mean((error3)^2))
+
+sample_v <- sample_n(validation_set,10000)
+sample_v <- sample_v[,-c(1)]
+pred4 <- predict(ridgeReg, sample_v)  
+pred4  
+error4 <-(sample_v$trip_duration - pred4)
+error4
+sqrt(mean((error4)^2))
+```
+
+___Elastic Regression___
+```{r}
+set.seed(123)
+enetReg <- train(trip_duration~.,sample, method = 'glmnet',
+                 tuneGrid = expand.grid(alpha = seq(0, 1, length = 10), 
+                                        lambda = seq(0.0001, 0.3, length = 10)),
+                 trControl = tr)
+# print best-tuned results
+enetReg$bestTune
+
+# plot results
+plot(enetReg)  # alpha is the mixing parameter and lambda is the regularization parameter
+plot(enetReg$finalModel, xvar = 'lambda', lwd =1.4, label=TRUE)
+
+pred5 <- predict(enetReg, sample)  
+pred5  
+error5 <-(sample$trip_duration - pred5)
+error5
+sqrt(mean((error5)^2))
+
+
+pred6 <- predict(enetReg, sample_v)  
+pred6  
+error6 <-(sample_v$trip_duration - pred6)
+error6
+sqrt(mean((error6)^2))
+```
+
+___Comparing the models___
+```{r}
+model_list <- list(Ridge = ridgeReg, 
+                   Lasso = lassoReg, 
+                   ElasticNet = enetReg
+                  )
+compare <- resamples(model_list)
+
+#Compare summary of models
+summary(compare)
+```
+
+___Plotting the errors for Lasso and Ridge___
+```{r}
+xyplot(compare, model = c("Ridge", "Lasso"), 
+       metric = 'RMSE')
+```
+
+___Random Forest Model___
+```{r}
+valid_lab <- validation_set$trip_duration
+sample$pickup_hour <- hour(sample$pickup_datetime)
+set.seed(20170803)
+library(randomForest)
+trip <- randomForest(trip_duration ~ 
+                       passenger_count + 
+                       pickup_longitude + 
+                       pickup_latitude + 
+                       pickup_hour, 
+                     data = sample, ntree = 100)
+
+trip
+
+sample_v$pickup_hour <- hour(sample_v$pickup_datetime)
+prediction <- predict(trip, sample_v, type = "response")
+View(prediction)
+
+valid_lab <- validation_set$trip_duration
+actuals_preds <- data.frame(cbind(actuals= valid_lab, predicteds=prediction)) 
+correlation_accuracy <- cor(actuals_preds)
+head(actuals_preds)
+
+#Min-max accuracy
+min_max_accuracy <- mean(apply(actuals_preds, 1, min) / apply(actuals_preds, 1, max)) 
+min_max_accuracy
+
+
+pred7 <- predict(trip, sample)  
+pred7  
+error7 <-(sample$trip_duration - pred7)
+error7
+sqrt(mean((error7)^2))
+
+
+pred8 <- predict(trip, sample_v)  
+pred8
+error8 <-(sample_v$trip_duration - pred8)
+error8
+sqrt(mean((error6)^2))
+```
+
+___Plotting the important features___
+```{r}
+imp_matrix <- as.tibble(xgb.importance(feature_names = colnames(training_set %>% select(-trip_duration)), model = gb_dt))
+
+imp_matrix %>%
+  ggplot(aes(reorder(Feature, Gain, FUN = max), Gain, fill = Feature)) +
+  geom_col() +
+  coord_flip() +
+  theme(legend.position = "none") +
+  labs(x = "Features", y = "Importance")
+```
